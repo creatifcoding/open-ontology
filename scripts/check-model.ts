@@ -17,6 +17,7 @@ import {
   type OntologyValueTypeIR,
   type PropertyIR,
 } from "../src/index.js";
+import { valueTypeLabel } from "../src/value-types.js";
 
 export interface Diagnostic {
   readonly severity: "error" | "warning";
@@ -45,11 +46,8 @@ const locate = (source: string | undefined, name: string): Pick<Diagnostic, "lin
   return { line: before.length, col: before.at(-1)!.length + 1 };
 };
 
-const typeLabel = (valueType: OntologyValueTypeIR): string =>
-  valueType.kind === "ref" ? valueType.target : valueType.kind;
-
 const propertyLabel = (property: PropertyIR): string => {
-  const type = typeLabel(property.valueType);
+  const type = valueTypeLabel(property.valueType);
   return `${property.key} ${property.cardinality === "many" ? `[${type}]` : type}${property.required ? "!" : ""}${property.unique ? " unique" : ""}`;
 };
 
@@ -60,7 +58,7 @@ const summarize = (ir: OntologyIR): string[] => [
     `link    ${link.name}  ${link.from} -> ${link.to}${link.properties.length ? `  ${link.properties.map(propertyLabel).join(", ")}` : ""}`),
   ...ir.actionTypes.map((action) => {
     const inputs = action.input
-      .map((input) => `${input.name} ${typeLabel(input.valueType)}${input.optional ? "" : "!"}`)
+      .map((input) => `${input.name} ${valueTypeLabel(input.valueType)}${input.optional ? "" : "!"}`)
       .join(", ");
     const changes = action.changes.map((change) => {
       switch (change.kind) {
@@ -108,12 +106,36 @@ const lint = (ir: OntologyIR, source?: string): Diagnostic[] => {
     ]),
   ]);
 
+  const valueTypes = new Map<string, OntologyValueTypeIR>([
+    ...ir.objectTypes.flatMap((object) => object.properties),
+    ...ir.linkTypes.flatMap((link) => link.properties),
+  ].map((property) => [property.key, property.valueType]));
+
   for (const { name, query } of ir.queryTypes) {
     const clauses = [...query.where, ...(query.rules ?? []).flatMap((rule) => rule.body)];
+    const decimals = new Map<string, string>();
     for (const clause of patterns(clauses)) {
       const attribute = clause[1] as string;
       if (!attribute.startsWith("?") && !attributes.has(attribute)) {
         warn(name, `Query ${name} matches ${attribute}, which no object or link declares; it will match nothing`);
+      }
+      if (valueTypes.get(attribute)?.kind === "decimal" && typeof clause[2] === "string") {
+        decimals.set(clause[2], attribute);
+      }
+    }
+    // Decimals are stored as strings, so Datalog orders them as text and cannot add them.
+    for (const [fn, source] of query.aggregate ?? []) {
+      const attribute = typeof source === "string" ? decimals.get(source) : undefined;
+      if (attribute && fn !== "count") {
+        warn(name, `Query ${name} applies ${String(fn)} to ${String(source)}, but ${attribute} holds decimal strings; the result is not a decimal ${String(fn)}`);
+      }
+    }
+    for (const clause of clauses) {
+      const [op, ...operands] = clause;
+      if (typeof op !== "string" || !OPERATORS.has(op) || op === "=" || op === "!=") continue;
+      const attribute = operands.map((operand) => typeof operand === "string" ? decimals.get(operand) : undefined).find(Boolean);
+      if (attribute) {
+        warn(name, `Query ${name} compares with ${op}, but ${attribute} holds decimal strings, which compare as text`);
       }
     }
     const bound = variablesIn([...query.where, ...(query.aggregate ?? [])] as DatalogValueIR, new Set());

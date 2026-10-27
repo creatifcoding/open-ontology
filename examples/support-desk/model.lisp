@@ -8,7 +8,7 @@
 (define-entity Ticket
   (:field [ticket/title String {:required true}])
   (:field [ticket/customer Customer {:required true}])
-  (:field [ticket/status String {:required true}])
+  (:field [ticket/status (Enum open escalated closed) {:required true}])
   (:field [ticket/priority Int {:required true}])
   (:field [ticket/opened-at Instant {:required true}]))
 

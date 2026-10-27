@@ -1,11 +1,17 @@
 /** A JSON-safe ontology representation shared by every authoring surface and backend. */
 import type { JsonSchema } from "effect";
 
-export type OntologyScalarTypeIR = "string" | "number" | "boolean" | "datetime" | "json";
+export type OntologyScalarTypeIR = "string" | "integer" | "number" | "boolean" | "datetime" | "json";
 
 export type OntologyValueTypeIR =
   | { readonly kind: OntologyScalarTypeIR }
-  | { readonly kind: "ref"; readonly target: string };
+  | { readonly kind: "ref"; readonly target: string }
+  /** One of a closed set of string values. */
+  | { readonly kind: "enum"; readonly values: readonly string[] }
+  /** An exact decimal with at most `scale` fraction digits, carried as a canonical string. */
+  | { readonly kind: "decimal"; readonly scale: number }
+  /** A safe integer count of `unit`, or of its 10^-scale fraction when `scale` is set. */
+  | { readonly kind: "quantity"; readonly unit: string; readonly scale?: number };
 
 export interface PropertyIR {
   readonly name: string;
