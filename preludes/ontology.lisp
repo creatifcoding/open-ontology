@@ -370,6 +370,7 @@
       (:child-identifier name Value)
       (:child-slot type expr (:positional true))
       (:child-slot required value)
+      (:child-slot unique value)
       (:child-slot indexed value)))
   (:bindings
     (bind bind-declaration-name (:identifier name) (:type SchemaDecl)))
@@ -438,6 +439,7 @@
       (:child-identifier name Value)
       (:child-slot type expr (:positional true))
       (:child-slot required value)
+      (:child-slot unique value)
       (:child-slot indexed value)))
   (:bindings
     (bind bind-declaration-name (:identifier name) (:type RelationDef)))

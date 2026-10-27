@@ -50,7 +50,7 @@ const typeLabel = (valueType: OntologyValueTypeIR): string =>
 
 const propertyLabel = (property: PropertyIR): string => {
   const type = typeLabel(property.valueType);
-  return `${property.key} ${property.cardinality === "many" ? `[${type}]` : type}${property.required ? "!" : ""}`;
+  return `${property.key} ${property.cardinality === "many" ? `[${type}]` : type}${property.required ? "!" : ""}${property.unique ? " unique" : ""}`;
 };
 
 const summarize = (ir: OntologyIR): string[] => [
@@ -148,7 +148,7 @@ const lint = (ir: OntologyIR, source?: string): Diagnostic[] => {
       if (change.kind === "set-property" && !cleared.has(`${JSON.stringify(change.object)} ${change.property}`)) {
         const property = ir.objectTypes.flatMap((object) => object.properties).find(({ key }) => key === change.property);
         if (property?.cardinality === "one") {
-          warn(action.name, `Action ${action.name} sets ${change.property} without clearing it first; the previous value stays queryable. Add (clear ... ${change.property}) before the set to replace it`);
+          warn(action.name, `Action ${action.name} sets ${change.property} without clearing it first; once the field has a value, the write fails its single-value constraint. Add (clear ... ${change.property}) before the set to replace it`);
         }
       }
     }

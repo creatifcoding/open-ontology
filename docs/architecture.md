@@ -1,6 +1,6 @@
 # Architecture
 
-Forma and the TypeScript DSL produce `OntologyIR`. The IR is JSON-safe and names object types, link types, actions, and queries. `materializeOntology` restores the executable Effect Schema model. `makeOntologyRuntime` converts action changes into Triplex transactions and runs named Datalog queries. `toTriplexConfig` emits Triplex configuration nodes and constraints.
+Forma and the TypeScript DSL produce `OntologyIR`. The IR is JSON-safe and names object types, link types, actions, and queries. `materializeOntology` restores the executable Effect Schema model. `makeOntologyRuntime` converts action changes into Triplex transactions, checks each against the ontology's single-value, unique, and reference-target constraints, and runs named Datalog queries. `toTriplexConfig` emits Triplex configuration nodes and constraints; `integrityConstraints` returns the same constraints without compiling configuration.
 
 ```text
 TypeScript DSL ──┐

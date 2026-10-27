@@ -463,6 +463,7 @@
               :name (meta/identifier field :name)
               :type (meta/slot-symbol field :type)
               :required (meta/slot-symbol field :required)
+              :unique (meta/slot-symbol field :unique)
               :indexed (meta/slot-symbol field :indexed))))
         :loc (meta/loc input)))))
 
@@ -487,6 +488,7 @@
       (:field name (:identifier name))
       (:field type (:slot-symbol type))
       (:field required (:slot-symbol required))
+      (:field unique (:slot-symbol unique))
       (:field indexed (:slot-symbol indexed))))
   (:field loc (:loc)))
 
@@ -729,6 +731,7 @@
       (:field name (:identifier name))
       (:field type (:slot-symbol type))
       (:field required (:slot-symbol required))
+      (:field unique (:slot-symbol unique))
       (:field indexed (:slot-symbol indexed)))))
 
 (meta-fn record/construct

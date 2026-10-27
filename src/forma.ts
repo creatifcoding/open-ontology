@@ -32,7 +32,8 @@ const readPrelude = (name: string): string =>
 /**
  * The compiler, ontology, and elaboration sources are vendored from Forma so the ontology
  * language remains Lisp-authored and inspectable. Query constructors use Forma's portable
- * `construct/object` primitive in the local copy instead of its application-host primitive.
+ * `construct/object` primitive in the local copy instead of its application-host primitive,
+ * and entity and relation fields also carry a `unique` option.
  */
 export const ontologyPreludeSources = Object.freeze({
   compiler: readPrelude("compiler.lisp"),
@@ -145,7 +146,7 @@ const propertyFromPrelude = (value: unknown): PropertyIR => {
     valueType: type.valueType,
     required: field.get("required") === true,
     cardinality: type.cardinality,
-    unique: false,
+    unique: field.get("unique") === true,
   };
 };
 
@@ -154,12 +155,20 @@ const description = (value: FormaMap): { readonly description?: string } => {
   return doc ? { description: doc } : {};
 };
 
-const objectTypeFromPrelude = (value: FormaMap): ObjectTypeIR => ({
-  kind: "object-type",
-  name: mapString(value, "name") ?? "anonymous-entity",
-  ...description(value),
-  properties: asMaps(value.get("fields")).map(propertyFromPrelude),
-});
+const objectTypeFromPrelude = (value: FormaMap): ObjectTypeIR => {
+  // The vendored prelude accepts these slots, but the IR has nowhere to carry them yet.
+  for (const [slot, key] of [["role", "role"], ["id-pattern", "idPattern"]] as const) {
+    if (value.get(key) != null) {
+      throw new TypeError(`(:${slot} ...) is not yet supported by the Triplex ontology adapter`);
+    }
+  }
+  return {
+    kind: "object-type",
+    name: mapString(value, "name") ?? "anonymous-entity",
+    ...description(value),
+    properties: asMaps(value.get("fields")).map(propertyFromPrelude),
+  };
+};
 
 const linkTypeFromPrelude = (value: FormaMap): LinkTypeIR => ({
   kind: "link-type",
@@ -348,6 +357,39 @@ type SourceLocation = { readonly start: number; readonly end: number; readonly l
 const locatedError = (message: string, loc?: SourceLocation): TypeError =>
   Object.assign(new TypeError(message), { loc, ...(loc?.source === undefined ? {} : { source: loc.source }) });
 
+/** A Forma reader node, as carried on a normalized form's `rawExpr`. */
+interface ReaderNode {
+  readonly _tag?: string;
+  readonly name?: string;
+  readonly items?: readonly ReaderNode[];
+  readonly pairs?: readonly (readonly [ReaderNode, ReaderNode])[];
+  readonly loc?: SourceLocation;
+}
+
+const optionKeys: Readonly<Record<string, readonly string[]>> = {
+  ":field": [":required", ":unique"],
+  ":input": [":required"],
+};
+
+/** Forma's normalizer drops unknown keys from field and input option maps, so reject them here. */
+const assertKnownOptions = (rawExpr: unknown, loc: SourceLocation): void => {
+  // Reader nodes are plain objects produced in-process by Forma's reader.
+  for (const clause of (rawExpr as ReaderNode).items ?? []) {
+    const [head, ...rest] = clause.items ?? [];
+    const allowed = optionKeys[head?.name ?? ""];
+    if (!allowed) continue;
+    const parts = rest.flatMap((item) => (item._tag === "Vector" ? (item.items ?? []) : [item]));
+    for (const [key] of parts.flatMap((item) => (item._tag === "Map" ? (item.pairs ?? []) : []))) {
+      if (key.name !== undefined && !allowed.includes(key.name)) {
+        throw locatedError(
+          `${head!.name} option ${key.name} is not supported by the Triplex ontology adapter; use ${allowed.join(" or ")}`,
+          { ...loc, ...key.loc },
+        );
+      }
+    }
+  }
+};
+
 const validateIR = (ir: OntologyIR, locations: ReadonlyMap<string, SourceLocation>): OntologyIR => {
   const errorAt = (name: string, message: string): never => {
     throw locatedError(message, locations.get(name));
@@ -433,6 +475,7 @@ export const elaborateFormaOntology = (
     if (!supportedForms.has(form.formName)) {
       throw locatedError(`${form.formName} is not yet supported by the Triplex ontology adapter`, form.loc);
     }
+    assertKnownOptions(form.rawExpr, form.loc);
     const name = form.identifiers.get("name");
     if (name) semanticEnv.declareGlobal(name, form.formName);
   }

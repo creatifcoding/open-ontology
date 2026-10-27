@@ -18,7 +18,7 @@ Do not promise these in v0.1. They are not implemented:
 
 - Durable storage, multi-user access, authorization, or an HTTP/OpenAPI server.
 - Queries with parameters, deleting objects, removing links, or conditional logic inside actions.
-- Enforcement of `required` or single-value cardinality on write.
+- Enforcement of `{:required true}` on write. Single-value, `:unique` and reference checks do run on write (section 7).
 
 If the person needs those today, still write the model: it is the part that carries forward. Tell them plainly that the runtime is a local check.
 
@@ -40,7 +40,7 @@ Put a new model at `examples/<domain>/model.lisp`, with a scenario at `examples/
 
 1. **Draft before interrogating.** Read what the person already gave you (docs, spreadsheets, schemas, a paragraph) and write a first model. Ask only about the gaps. A concrete draft gets better corrections than a questionnaire does.
 2. **Fill gaps with these questions,** one area at a time:
-   - Things: "What do you keep track of? How do you tell two of them apart?" → entities and id conventions.
+   - Things: "What do you keep track of? How do you tell two of them apart?" → entities, id conventions, and `{:unique true}` on an identifying field such as a code.
    - Facts: "What do you need to know about each one? Which facts always exist?" → fields and `{:required true}`.
    - Connections: "How are they connected? Is there only ever one current connection, or does the connection have its own facts, such as when or why?" → a reference field, or a relation.
    - Verbs: "What do people do that changes these things? What do they supply when they do it?" → actions and inputs.
@@ -89,7 +89,8 @@ Forma is a Lisp. `;` starts a comment. Brackets `[...]` are vectors, and `{...}`
   (:field [ticket/opened-at Instant {:required true}]))
 ```
 
-- `(:field [namespace/name Type {:required true}])`. The options map is optional. `:required` is the only option carried into the IR.
+- `(:field [namespace/name Type {:required true :unique true}])`. The options map is optional and accepts only `:required` and `:unique`. Any other key, such as `:indexed`, is an error rather than being ignored.
+- `{:unique true}`: no two objects of the entity may hold the same value. Writes that break it fail (section 7).
 - `(:doc "...")` becomes the entity's `description`. Only entities accept `:doc`.
 - A field whose type names another entity (`Customer`) is a reference. Its value is the target's id.
 
@@ -103,7 +104,7 @@ Forma is a Lisp. `;` starts a comment. Brackets `[...]` are vectors, and `{...}`
 
 - `(define-relation name FromEntity ToEntity fields...)`. Fields are optional.
 - Each link instance is its own object, with id `link:<relation>:<from-id>:<to-id>`. Its endpoints are the attributes `:<relation>/from` and `:<relation>/to`. Do not declare fields named `from` or `to`.
-- Linking the same pair again reuses that id and adds a second value for each link field.
+- Linking the same pair again reuses that id. A link field holds one value, so linking the pair again with a new value fails on write; declare the field `(List T)` to keep every value.
 
 ### 5.3 define-action
 
@@ -133,7 +134,7 @@ Forma is a Lisp. `;` starts a comment. Brackets `[...]` are vectors, and `{...}`
       {:escalated-to/reason reason :escalated-to/at now}))))
 ```
 
-- `(:input [name Type {:required true}])`, repeated. Inputs are decoded before anything is written. A missing required input fails with a schema error such as `Missing key at ["title"]`.
+- `(:input [name Type {:required true}])`, repeated. `:required` is the only input option. Inputs are decoded before anything is written. A missing required input fails with a schema error such as `Missing key at ["title"]`.
 - Mark every input the changes use as required. An optional input that is omitted fails with `Missing action input: <name>`.
 - `(:returns String)`: include it. The form declares it, and v0.1 ignores the value.
 - `(:do change)` for one change, or `(:do (changes change...))` for several, applied in order within one transaction.
@@ -144,7 +145,7 @@ Forma is a Lisp. `;` starts a comment. Brackets `[...]` are vectors, and `{...}`
 | Change | Syntax | Effect |
 | --- | --- | --- |
 | create | `(create Entity id {:ns/field value ...})` | Asserts each listed field on object `id`. |
-| set | `(set object :ns/field value)` | Adds a value. It does **not** remove the previous one. |
+| set | `(set object :ns/field value)` | Adds a value. It does **not** remove the previous one, so on a single-valued field that already has a value the write fails. |
 | clear | `(clear object :ns/field)` | Retracts every value of that field on the object. |
 | link | `(link relation from to {:relation/field value ...})` | Creates or extends the link object between `from` and `to`. |
 
@@ -219,7 +220,7 @@ Queries take no parameters. `model:check` warns when a pattern names an attribut
 
 ### 5.8 Rejected forms
 
-The adapter accepts declarations `define-entity`, `define-relation`, `define-action`, `define-mutation` and `define-datalog-query`, plus bundled `import` forms described below. Other Forma forms (`define-view`, `define-role`, `define-permission`, `define-process`, `define-query`, …) are recognized and rejected with "`<form>` is not yet supported by the Triplex ontology adapter". Unknown change operations, such as `delete`, are rejected too.
+The adapter accepts declarations `define-entity`, `define-relation`, `define-action`, `define-mutation` and `define-datalog-query`, plus bundled `import` forms described below. Other Forma forms (`define-view`, `define-role`, `define-permission`, `define-process`, `define-query`, …) are recognized and rejected with "`<form>` is not yet supported by the Triplex ontology adapter". The entity slots `(:role ...)` and `(:id-pattern ...)` are rejected the same way, as are unknown field and input options. Unknown change operations, such as `delete`, are rejected too.
 
 ### 5.9 Bundled domain libraries
 
@@ -250,7 +251,7 @@ ok examples/field-service/model.lisp (field-service@1)
 0 warnings
 ```
 
-In the summary, `!` marks a required field or input, and `[T]` marks a many-valued field. An error looks like this:
+In the summary, `!` marks a required field or input, `unique` marks a unique field, and `[T]` marks a many-valued field. An error looks like this:
 
 ```text
 model.lisp:2:1: error: Link assigned-to has unknown endpoints Missing -> WorkOrder
@@ -263,7 +264,7 @@ Warnings the checker raises, and the fix for each:
 | query matches an attribute no object or link declares | Correct the spelling, or declare the field |
 | query finds a variable no `:where` clause binds | Bind it with a pattern, or drop it from `:find` |
 | action uses an optional input in a change | Mark the input `{:required true}` |
-| action sets a single-valued field without clearing it | Add `(clear obj :ns/field)` before the `set` |
+| action sets a single-valued field without clearing it | Add `(clear obj :ns/field)` before the `set`; otherwise the write fails once the field has a value |
 | action targets a fixed object id | Declare the missing input, or fix its spelling |
 
 ## 7. Running a scenario
@@ -303,7 +304,8 @@ Semantics you can rely on in v0.1:
 - `commandId` makes an invocation idempotent: reusing it fails with `CommandAlreadyCommittedError`.
 - `now` in a change resolves to `options.now`, or to the current time.
 - Query results are rows keyed by variable, including the `?`: `{ "?title": "VPN drops hourly" }`. References come back as id strings and instants as epoch milliseconds.
-- `required` and single-value cardinality are recorded in the IR but not enforced on write.
+- Writes are checked against the model. The whole invocation fails with `ConstraintViolationError` when a single-valued field would hold two values, two objects of an entity would share a `:unique` value, or a reference or link endpoint names an id that is not an object of the target entity. Seed facts with their `entityType` so references to them pass.
+- `required` is recorded in the IR but not enforced on write. `clear` retracts a value for all valid time, and the check runs at every earlier valid-time boundary, so enforcing `required` would reject the clear-then-set replacement. To check it anyway, pass `{ enforce: GraphConstraint.enforcement(integrityConstraints(ir)) }` (`GraphConstraint` comes from `@triplex-build/triplex/config`). Pass `{ enforce: false }` to write without checks.
 
 ## 8. TypeScript authoring
 
@@ -322,7 +324,7 @@ const AssignWorkOrder = Ontology.ActionType("assign-work-order", {
 });
 ```
 
-`pnpm model:check path/to/model.ts` imports the module and checks the first exported `defineOntology(...)` result. The TypeScript DSL also offers `Property.make(key, schema).many()` and `.unique()`, which Forma does not expose.
+`pnpm model:check path/to/model.ts` imports the module and checks the first exported `defineOntology(...)` result. The TypeScript DSL writes many-valued and unique fields as `Property.make(key, schema).many()` and `.unique()`; Forma writes them as `(List T)` and `{:unique true}`.
 
 ## 9. The portable IR
 
@@ -452,7 +454,7 @@ Not captured yet, and worth telling the person: "only support staff may close ti
 - Surface: no HTTP server, OpenAPI, or UI. The package is not published to npm.
 - Actions: a fixed list of changes over literals, inputs and `now`. There are no conditions, computed values, deletes or unlinks.
 - Queries: named and fixed. There are no parameters.
-- Integrity: `required`, cardinality and uniqueness are recorded, not enforced on write.
+- Integrity: single-value, `:unique` and reference constraints are enforced on write; `required` is recorded, not enforced.
 - Forms: only the five listed in section 5.8.
 
 Next checkpoint, in order: SQLite persistence, policy authorization, and a versioned config release and deploy. After that come restart and historical-query tests, verification of attribution and idempotency, and a migration or rebuild procedure. HTTP reflection and OpenAPI follow that.

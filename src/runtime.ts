@@ -37,7 +37,11 @@ export interface ActionInvocationOptions {
   readonly correlationId?: string;
   readonly now?: number;
   readonly configSnapshot?: TransactionMeta["configSnapshot"];
-  readonly enforce?: TransactionMeta["enforce"];
+  /**
+   * Constraints checked against the transaction's post-state. Defaults to the ontology's
+   * single-value, unique, and reference-target constraints; pass `false` to write unchecked.
+   */
+  readonly enforce?: TransactionMeta["enforce"] | false;
 }
 
 export type OntologyQueryResponse<Row> = Omit<QueryResponse, "results"> & {
@@ -118,6 +122,38 @@ const linkEntityName = (link: LinkTypeDefinition): string =>
     .split("-")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join("")}Link`;
+
+const entityConstraints = (definition: EntityDefinition): GraphConstraint.Definition[] =>
+  Object.values(definition.properties).flatMap((property) => [
+    ...(property.isRequired ? [GraphConstraint.required(definition.name, property.key)] : []),
+    ...(property.cardinality === "one"
+      ? [GraphConstraint.cardinality(definition.name, property.key, 1)]
+      : []),
+    ...(property.isUnique ? [GraphConstraint.unique(definition.name, property.key)] : []),
+    ...(property.kind === "ref" && property.target
+      ? [GraphConstraint.referenceTarget(definition.name, property.key, property.target.name)]
+      : []),
+  ]);
+
+/**
+ * The required, single-value, unique, and reference-target constraints an ontology declares, in
+ * the form Triplex enforces on write. Matches `toTriplexConfig(...).constraints` and also covers
+ * JSON properties, which Triplex configuration cannot compile yet.
+ */
+export const integrityConstraints = (
+  source: OntologyDefinition | OntologyIR,
+): readonly GraphConstraint.Definition[] => {
+  const ontology = isOntologyIR(source) ? materializeOntology(source) : source;
+  return [
+    ...[...ontology.objectTypes.values()].flatMap(entityConstraints),
+    ...[...ontology.linkTypes.values()].flatMap((link) =>
+      entityConstraints({
+        name: linkEntityName(link),
+        properties: { ...link.endpoints, ...link.properties },
+      }),
+    ),
+  ];
+};
 
 /** Compile ontology entities and their portable definition into one Triplex configuration snapshot. */
 export const toTriplexConfig = (source: OntologyDefinition | OntologyIR): TriplexOntologyConfig => {
@@ -290,9 +326,18 @@ const changesToOperations = (
   return operations;
 };
 
-/** Bind an ontology's named actions and queries to a caller-provided Triplex layer. */
+/**
+ * Bind an ontology's named actions and queries to a caller-provided Triplex layer. Actions
+ * enforce single-value, unique, and reference-target constraints unless invoked with
+ * `enforce: false`.
+ */
 export const makeOntologyRuntime = (source: OntologyDefinition | OntologyIR) => {
   const ontology = isOntologyIR(source) ? materializeOntology(source) : source;
+  // Required constraints stay opt-in. `clear` retracts a value for all valid time, and Triplex
+  // checks every valid-time boundary, so clear-then-set would fail at each earlier boundary.
+  const integrity = GraphConstraint.enforcement(
+    integrityConstraints(ontology).filter(({ rule }) => rule._tag !== "Required"),
+  );
   return {
     invoke: <I>(
       actionRef: string | ActionTypeDefinition<I>,
@@ -317,7 +362,7 @@ export const makeOntologyRuntime = (source: OntologyDefinition | OntologyIR) => 
             ...(options.configSnapshot === undefined
               ? {}
               : { configSnapshot: options.configSnapshot }),
-            ...(options.enforce === undefined ? {} : { enforce: options.enforce }),
+            ...(options.enforce === false ? {} : { enforce: options.enforce ?? integrity }),
           },
         );
       }),

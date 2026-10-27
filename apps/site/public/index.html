@@ -568,8 +568,9 @@ POST /v1/prices          { "lookup_key": "pro_overage",
               <div class="oo-term__head"><span>A draft with two mistakes</span><span>exit 0</span></div>
 <pre><code><span class="oo-prompt">$ pnpm model:check examples/support-desk/draft.lisp</span>
 <span class="oo-warn">draft.lisp:43:1: warning:</span> Action close-ticket sets :ticket/status without
-  clearing it first; the previous value stays queryable. Add (clear ...
-  :ticket/status) before the set to replace it
+  clearing it first; once the field has a value, the write fails its
+  single-value constraint. Add (clear ... :ticket/status) before the set to
+  replace it
 <span class="oo-warn">draft.lisp:68:1: warning:</span> Query tickets-by-status matches :ticket/stauts,
   which no object or link declares; it will match nothing
 ok examples/support-desk/draft.lisp (draft@0.1.0)
