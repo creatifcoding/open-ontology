@@ -30,6 +30,7 @@ import type {
 } from "./model.js";
 import { isOntologyIR, type OntologyIR } from "./ir.js";
 import { materializeOntology, ontologyToIR } from "./materialize.js";
+import { canonicalDecimal, valueProblem } from "./value-types.js";
 
 export interface ActionInvocationOptions {
   readonly actor?: string;
@@ -75,11 +76,18 @@ const triplexAttribute = (
   property: PropertyDefinition,
   objectTypes: ReadonlyMap<string, TriplexEntityType>,
 ) => {
-  switch (property.kind) {
+  const type = property.valueType;
+  switch (type.kind) {
     case "string":
+    case "decimal":
       return ConfigAttribute.text(property.key);
+    case "integer":
+    case "quantity":
+      return ConfigAttribute.integer(property.key);
     case "number":
       return ConfigAttribute.number(property.key);
+    case "enum":
+      return ConfigAttribute.enumOf(property.key, type.values);
     case "boolean":
       return ConfigAttribute.boolean(property.key);
     case "datetime":
@@ -183,10 +191,18 @@ const resolveValue = (
 };
 
 const encodeValue = (property: PropertyDefinition, value: unknown): TripleValue => {
-  switch (property.kind) {
+  const type = property.valueType;
+  const problem = valueProblem(type, value);
+  if (problem) throw new TypeError(`Property ${property.key} ${problem}`);
+  switch (type.kind) {
     case "string":
+    case "enum":
       return string(String(value));
+    case "decimal":
+      return string(canonicalDecimal(String(value), type.scale));
     case "number":
+    case "integer":
+    case "quantity":
       return number(Number(value));
     case "boolean":
       return boolean(Boolean(value));

@@ -16,24 +16,11 @@ import type {
   LinkEndpoints,
   PropertyQueryType,
 } from "./model.js";
+import { assertValueType, valueTypeAnnotation, valueTypeSchema } from "./value-types.js";
 
 const PROPERTY_KEY = /^:[a-z][a-z0-9_-]*\/[a-z][a-z0-9_-]*$/;
 const OBJECT_TYPE = /^[A-Z][A-Za-z0-9]*$/;
 const DECLARATION_NAME = /^[a-z][a-z0-9-]*$/;
-
-const schemaKind = (schema: Schema.Schema<unknown>): PropertyKind => {
-  switch (schema.ast._tag) {
-    case "String":
-    case "Literal":
-      return "string";
-    case "Number":
-      return "number";
-    case "Boolean":
-      return "boolean";
-    default:
-      return "json";
-  }
-};
 
 type SchemaAst = {
   readonly _tag?: string;
@@ -45,9 +32,55 @@ type SchemaAst = {
   }[];
   readonly context?: { readonly isOptional?: boolean };
   readonly annotations?: Readonly<Record<string, unknown>>;
+  readonly checks?: readonly { readonly annotations?: Readonly<Record<string, unknown>> }[];
+};
+
+/**
+ * Value types the structure of a schema shows: an annotated decimal or quantity, an integer
+ * check, or a union of string literals. Other schemas fall back to their AST tag.
+ */
+const refinedValueType = (ast: SchemaAst): OntologyValueTypeIR | undefined => {
+  const checks = ast.checks ?? [];
+  const annotated = checks.map((check) => check.annotations?.[valueTypeAnnotation]).findLast(Boolean);
+  // Only valueTypeSchema writes this annotation, and always with a validated value type.
+  if (annotated) return annotated as OntologyValueTypeIR;
+  if (
+    ast._tag === "Number" &&
+    checks.some((check) => {
+      const representation = check.annotations?.["representation"];
+      return typeof representation === "object" && representation !== null &&
+        "id" in representation && representation.id === "effect/schema/isInt";
+    })
+  ) {
+    return { kind: "integer" };
+  }
+  const members = ast._tag === "Union" ? (ast.types ?? []) : [];
+  const values = members.flatMap((member) =>
+    member._tag === "Literal" && typeof member.literal === "string" ? [member.literal] : []);
+  if (members.length > 1 && values.length === members.length) return { kind: "enum", values };
+  return undefined;
+};
+
+const schemaValueType = (schema: Schema.Schema<unknown>): OntologyValueTypeIR => {
+  const ast = schema.ast as SchemaAst;
+  const refined = refinedValueType(ast);
+  if (refined) return refined;
+  switch (ast._tag) {
+    case "String":
+    case "Literal":
+      return { kind: "string" };
+    case "Number":
+      return { kind: "number" };
+    case "Boolean":
+      return { kind: "boolean" };
+    default:
+      return { kind: "json" };
+  }
 };
 
 const valueTypeFromAst = (ast: SchemaAst): OntologyValueTypeIR => {
+  const refined = refinedValueType(ast);
+  if (refined) return refined;
   switch (ast._tag) {
     case "String":
       return { kind: "string" };
@@ -83,6 +116,9 @@ const actionInputFields = (schema: Schema.Schema<unknown>): readonly ActionInput
   }));
 };
 
+/** A schema that decodes without services, so it can also type an action input field. */
+type DecodableSchema<A> = Schema.Schema<A> & { readonly DecodingServices: never };
+
 class PropertyBuilder<A, QueryValue = A> implements PropertyDefinition<A, QueryValue> {
   readonly _tag = "Property" as const;
   declare readonly [PropertyQueryType]?: QueryValue;
@@ -93,14 +129,18 @@ class PropertyBuilder<A, QueryValue = A> implements PropertyDefinition<A, QueryV
 
   constructor(
     readonly key: `:${string}/${string}`,
-    readonly schema: Schema.Schema<A>,
-    readonly kind: PropertyKind,
+    readonly schema: DecodableSchema<A>,
+    readonly valueType: OntologyValueTypeIR,
     target?: ObjectTypeDefinition,
   ) {
     if (!PROPERTY_KEY.test(key)) {
       throw new TypeError(`Property key must be a lowercase namespaced keyword; received ${key}`);
     }
     if (target !== undefined) this.target = target;
+  }
+
+  get kind(): PropertyKind {
+    return this.valueType.kind;
   }
 
   get isRequired(): boolean {
@@ -131,18 +171,40 @@ class PropertyBuilder<A, QueryValue = A> implements PropertyDefinition<A, QueryV
   }
 }
 
+// valueTypeSchema returns an untyped schema; each caller below names the type it decodes to.
+const typedSchema = <A>(valueType: OntologyValueTypeIR) => valueTypeSchema(valueType) as DecodableSchema<A>;
+
 export const Property = {
-  make: <A>(key: `:${string}/${string}`, schema: Schema.Schema<A>): PropertyBuilder<A> =>
-    new PropertyBuilder(key, schema, schemaKind(schema as Schema.Schema<unknown>)),
+  make: <A>(key: `:${string}/${string}`, schema: DecodableSchema<A>): PropertyBuilder<A> =>
+    new PropertyBuilder(key, schema, schemaValueType(schema as Schema.Schema<unknown>)),
   instant: (key: `:${string}/${string}`): PropertyBuilder<number | Date, Date> =>
-    new PropertyBuilder(key, Schema.Union([Schema.Number, Schema.Date]), "datetime"),
+    new PropertyBuilder(key, Schema.Union([Schema.Number, Schema.Date]), { kind: "datetime" }),
+  /** A safe integer. */
+  int: (key: `:${string}/${string}`): PropertyBuilder<number> =>
+    new PropertyBuilder(key, Schema.Int, { kind: "integer" }),
+  /** One of a closed set of strings. */
+  enum: <const V extends string>(
+    key: `:${string}/${string}`,
+    values: readonly [V, ...V[]],
+  ): PropertyBuilder<V> =>
+    new PropertyBuilder(key, Schema.Literals(values), assertValueType({ kind: "enum", values })),
+  /** An exact decimal string with at most `scale` fraction digits. */
+  decimal: (key: `:${string}/${string}`, scale: number): PropertyBuilder<string> => {
+    const valueType = assertValueType({ kind: "decimal", scale });
+    return new PropertyBuilder(key, typedSchema<string>(valueType), valueType);
+  },
+  /** A safe integer count of `unit`, or of its 10^-scale fraction when `scale` is given. */
+  quantity: (key: `:${string}/${string}`, unit: string, scale?: number): PropertyBuilder<number> => {
+    const valueType = assertValueType({ kind: "quantity", unit, ...(scale === undefined ? {} : { scale }) });
+    return new PropertyBuilder(key, typedSchema<number>(valueType), valueType);
+  },
   ref: <Target extends ObjectTypeDefinition>(
     key: `:${string}/${string}`,
     target: Target,
   ): PropertyBuilder<
     string,
     import("./model.js").OntologyEntityId<import("./model.js").ObjectTypeIdentity<Target["name"]>>
-  > => new PropertyBuilder(key, Schema.String, "ref", target),
+  > => new PropertyBuilder(key, Schema.String, { kind: "ref", target: target.name }, target),
 };
 
 export const Input = {

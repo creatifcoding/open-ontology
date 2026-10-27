@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import type { DatalogQuery } from "@triplex-build/triplex";
-import type { ActionInputIR } from "./ir.js";
+import type { ActionInputIR, OntologyValueTypeIR } from "./ir.js";
 
 declare const entityIdentityType: unique symbol;
 declare const entitySourceType: unique symbol;
@@ -30,13 +30,15 @@ export interface EntityQuerySource<Identity> {
   readonly [entitySourceType]: Identity;
 }
 
-export type PropertyKind = "string" | "number" | "boolean" | "datetime" | "ref" | "json";
+export type PropertyKind = OntologyValueTypeIR["kind"];
 
 export interface PropertyDefinition<A = any, QueryValue = A> {
   readonly _tag: "Property";
   readonly key: `:${string}/${string}`;
   readonly schema: Schema.Schema<A>;
   readonly kind: PropertyKind;
+  /** The portable value type, including enum values, decimal scale, and quantity unit. */
+  readonly valueType: OntologyValueTypeIR;
   readonly isRequired: boolean;
   readonly cardinality: "one" | "many";
   readonly isUnique: boolean;

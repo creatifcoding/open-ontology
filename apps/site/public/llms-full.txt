@@ -58,7 +58,8 @@ Put a new model at `examples/<domain>/model.lisp`, with a scenario at `examples/
 | "We track customers and tickets." | `(define-entity Customer ...)`, `(define-entity Ticket ...)` |
 | "Each ticket belongs to one customer." | A reference field on the ticket: `(:field [ticket/customer Customer {:required true}])` |
 | "Tickets get escalated to engineers, and we note why and when." | A relation with its own fields: `(define-relation escalated-to Ticket Engineer (:field [escalated-to/reason String ...]))` |
-| "Status is open, escalated, or closed." | A `String` field, changed only by actions that `clear` and then `set` it. v0.1 has no enums. List the allowed values in a comment. |
+| "Status is open, escalated, or closed." | An enum field, `(:field [ticket/status (Enum open escalated closed) {:required true}])`, changed only by actions that `clear` and then `set` it. |
+| "We count units, weigh in kilograms to the gram, and price to the cent." | `(Quantity EA)`, `(Quantity KG 3)`, and `(Decimal 2)` fields |
 | "Support opens a ticket for a customer." | `(define-action open-ticket ...)` with a `create` change |
 | "Which open tickets matter most?" | `(define-datalog-query open-work ...)` with `not` and `:orderBy` |
 | "How many tickets are in each status?" | A query with `:aggregate [["count" "?t" "?count"]]` |
@@ -84,7 +85,7 @@ Forma is a Lisp. `;` starts a comment. Brackets `[...]` are vectors, and `{...}`
 (define-entity Ticket
   (:field [ticket/title String {:required true}])
   (:field [ticket/customer Customer {:required true}])
-  (:field [ticket/status String {:required true}])
+  (:field [ticket/status (Enum open escalated closed) {:required true}])
   (:field [ticket/priority Int {:required true}])
   (:field [ticket/opened-at Instant {:required true}]))
 ```
@@ -199,15 +200,21 @@ Queries take no parameters. `model:check` warns when a pattern names an attribut
 
 ### 5.6 Types
 
-| Forma | IR `valueType.kind` | Value at run time |
+| Forma | IR `valueType` | Value at run time |
 | --- | --- | --- |
-| `String` | `string` | string |
-| `Int`, `Float`, `Number` | `number` | number |
-| `Bool`, `Boolean` | `boolean` | boolean |
-| `Instant`, `DateTime` | `datetime` | epoch milliseconds in and out |
-| `Json` | `json` | any JSON value; `toTriplexConfig` rejects it in v0.1 |
-| `EntityName` or `(Ref EntityName)` | `ref` | the target object's id string |
-| `(List T)`, `(Set T)` | kind of `T`, with `cardinality: "many"` | each `set` adds one more value |
+| `String` | `{ "kind": "string" }` | string |
+| `Int` | `{ "kind": "integer" }` | safe integer; `1.5` fails to decode |
+| `Float`, `Number` | `{ "kind": "number" }` | number |
+| `(Enum open closed)` | `{ "kind": "enum", "values": ["open", "closed"] }` | one of the listed strings |
+| `(Decimal 2)` | `{ "kind": "decimal", "scale": 2 }` | a decimal string with at most 2 fraction digits, such as `"19.9"`; stored as `"19.90"` |
+| `(Quantity EA)`, `(Quantity KG 3)` | `{ "kind": "quantity", "unit": "KG", "scale": 3 }` | safe integer count of the unit, or of its 10^-scale fraction: `1250` is 1.250 KG |
+| `Bool`, `Boolean` | `{ "kind": "boolean" }` | boolean |
+| `Instant`, `DateTime` | `{ "kind": "datetime" }` | epoch milliseconds in and out |
+| `Json` | `{ "kind": "json" }` | any JSON value; `toTriplexConfig` rejects it in v0.1 |
+| `EntityName` or `(Ref EntityName)` | `{ "kind": "ref", "target": "EntityName" }` | the target object's id string |
+| `(List T)`, `(Set T)` | the type of `T`, with `cardinality: "many"` | each `set` adds one more value |
+
+Values are checked when they are written, whether they come from an input or a literal. A literal that does not fit its field, such as `"opne"` for `(Enum open closed)`, is an error at check time. A type name that is neither built in nor a declared entity is an error with the closest name suggested: `has unknown type Deciml; did you mean Decimal?`. Decimals are strings, so Datalog compares them as text and cannot sum or average them; `model:check` warns about both. Use a scaled `Quantity` when a query needs arithmetic.
 
 ### 5.7 Naming rules (enforced)
 
@@ -250,7 +257,7 @@ ok examples/field-service/model.lisp (field-service@1)
 0 warnings
 ```
 
-In the summary, `!` marks a required field or input, and `[T]` marks a many-valued field. An error looks like this:
+In the summary, `!` marks a required field or input, and `[T]` marks a many-valued field. Types print as `string`, `integer`, `enum(open|closed)`, `decimal(2)`, `quantity(KG, 3)`, and so on, or as the referenced entity's name. An error looks like this:
 
 ```text
 model.lisp:2:1: error: Link assigned-to has unknown endpoints Missing -> WorkOrder
@@ -265,6 +272,7 @@ Warnings the checker raises, and the fix for each:
 | action uses an optional input in a change | Mark the input `{:required true}` |
 | action sets a single-valued field without clearing it | Add `(clear obj :ns/field)` before the `set` |
 | action targets a fixed object id | Declare the missing input, or fix its spelling |
+| query sums, averages, or orders a decimal field | Use a scaled `Quantity`, or do the arithmetic in the caller |
 
 ## 7. Running a scenario
 
@@ -324,6 +332,8 @@ const AssignWorkOrder = Ontology.ActionType("assign-work-order", {
 
 `pnpm model:check path/to/model.ts` imports the module and checks the first exported `defineOntology(...)` result. The TypeScript DSL also offers `Property.make(key, schema).many()` and `.unique()`, which Forma does not expose.
 
+The Forma types in section 5.6 have TypeScript constructors: `Property.int(key)`, `Property.enum(key, ["open", "closed"])`, `Property.decimal(key, 2)`, and `Property.quantity(key, "KG", 3)`. `Property.make(key, Schema.Int)` and `Property.make(key, Schema.Literals([...]))` produce the same IR as `Int` and `Enum`. In an action input, reuse a property's schema, such as `Schema.Struct({ weight: Item.properties.weight.schema })`, so the input keeps its decimal or quantity type.
+
 ## 9. The portable IR
 
 `elaborateFormaOntology(source, { name, version })` and `ontologyToIR(definition)` both return:
@@ -359,7 +369,7 @@ This is `examples/support-desk/model.lisp` in full:
 (define-entity Ticket
   (:field [ticket/title String {:required true}])
   (:field [ticket/customer Customer {:required true}])
-  (:field [ticket/status String {:required true}])
+  (:field [ticket/status (Enum open escalated closed) {:required true}])
   (:field [ticket/priority Int {:required true}])
   (:field [ticket/opened-at Instant {:required true}]))
 
@@ -452,6 +462,7 @@ Not captured yet, and worth telling the person: "only support staff may close ti
 - Surface: no HTTP server, OpenAPI, or UI. The package is not published to npm.
 - Actions: a fixed list of changes over literals, inputs and `now`. There are no conditions, computed values, deletes or unlinks.
 - Queries: named and fixed. There are no parameters.
+- Types: no subtyping or union endpoints. Decimals are strings, so queries cannot do arithmetic on them; quantities record a unit but no conversion.
 - Integrity: `required`, cardinality and uniqueness are recorded, not enforced on write.
 - Forms: only the five listed in section 5.8.
 

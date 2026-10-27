@@ -24,6 +24,7 @@ import type {
   QueryTypeIR,
 } from "./ir.js";
 import { actionInputSchemaFromFields, materializeOntology } from "./materialize.js";
+import { assertValueType, valueProblem } from "./value-types.js";
 import type { OntologyDefinition } from "./model.js";
 
 const readPrelude = (name: string): string =>
@@ -90,6 +91,18 @@ const listItems = (value: unknown): readonly unknown[] | undefined => {
   return Array.isArray(value.items) ? value.items : undefined;
 };
 
+/** Built-in Forma type names, for suggestions when a type is misspelt. */
+const formaTypeNames = [
+  "String", "Symbol", "Ref", "Int", "Float", "Number", "Bool", "Boolean", "Instant", "DateTime",
+  "Json", "Any", "Enum", "Decimal", "Quantity", "List", "Set",
+] as const;
+
+const typeArgumentExamples: Readonly<Record<string, string>> = {
+  Enum: "(Enum open closed)",
+  Decimal: "(Decimal 2)",
+  Quantity: "(Quantity EA)",
+};
+
 const scalarType = (name: string): OntologyValueTypeIR => {
   switch (name) {
     case "String":
@@ -97,6 +110,7 @@ const scalarType = (name: string): OntologyValueTypeIR => {
     case "Ref":
       return { kind: "string" };
     case "Int":
+      return { kind: "integer" };
     case "Float":
     case "Number":
       return { kind: "number" };
@@ -110,8 +124,29 @@ const scalarType = (name: string): OntologyValueTypeIR => {
     case "Any":
       return { kind: "json" };
     default:
+      if (name in typeArgumentExamples) {
+        throw new TypeError(`${name} needs arguments, for example ${typeArgumentExamples[name]}`);
+      }
+      // validateIR rejects targets that name no declared entity.
       return { kind: "ref", target: name };
   }
+};
+
+/** A symbol or string literal in a type form, such as an enum value or a unit. */
+const typeWord = (value: unknown): string | undefined => {
+  if (value && typeof value === "object" && "_tag" in value && value._tag === "Str" && "value" in value) {
+    return typeof value.value === "string" ? value.value : undefined;
+  }
+  return symbolName(value);
+};
+
+/** A number literal in a type form, such as a decimal scale. */
+const typeNumber = (value: unknown): number | undefined => {
+  if (typeof value === "number") return value;
+  if (value && typeof value === "object" && "_tag" in value && value._tag === "Num" && "value" in value) {
+    return typeof value.value === "number" ? value.value : undefined;
+  }
+  return undefined;
 };
 
 const formaType = (
@@ -123,11 +158,35 @@ const formaType = (
   const items = listItems(value);
   const constructor = symbolName(items?.[0]);
   const argument = symbolName(items?.[1]);
+  const args = items?.slice(1) ?? [];
   if (constructor === "Ref" && argument) {
     return { valueType: { kind: "ref", target: argument }, cardinality: "one" };
   }
   if ((constructor === "List" || constructor === "Set") && items?.[1]) {
     return { valueType: formaType(items[1]).valueType, cardinality: "many" };
+  }
+  if (constructor === "Enum") {
+    const values = args.flatMap((arg) => typeWord(arg) ?? []);
+    if (values.length !== args.length) throw new TypeError("Enum values must be symbols or strings");
+    return { valueType: assertValueType({ kind: "enum", values }), cardinality: "one" };
+  }
+  if (constructor === "Decimal") {
+    const scale = typeNumber(args[0]);
+    if (args.length !== 1 || scale === undefined) {
+      throw new TypeError("Decimal takes one scale, for example (Decimal 2)");
+    }
+    return { valueType: assertValueType({ kind: "decimal", scale }), cardinality: "one" };
+  }
+  if (constructor === "Quantity") {
+    const unit = typeWord(args[0]);
+    const scale = typeNumber(args[1]);
+    if (unit === undefined || args.length > 2 || (args.length === 2 && scale === undefined)) {
+      throw new TypeError("Quantity takes a unit and an optional scale, for example (Quantity KG 3)");
+    }
+    return {
+      valueType: assertValueType({ kind: "quantity", unit, ...(scale === undefined ? {} : { scale }) }),
+      cardinality: "one",
+    };
   }
   throw new TypeError(`Unsupported Forma ontology type ${String(direct ?? constructor ?? value)}`);
 };
@@ -348,6 +407,29 @@ type SourceLocation = { readonly start: number; readonly end: number; readonly l
 const locatedError = (message: string, loc?: SourceLocation): TypeError =>
   Object.assign(new TypeError(message), { loc, ...(loc?.source === undefined ? {} : { source: loc.source }) });
 
+const editDistance = (left: string, right: string): number => {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (const [row, leftChar] of [...left].entries()) {
+    const current = [row + 1];
+    for (const [column, rightChar] of [...right].entries()) {
+      current.push(Math.min(previous[column + 1]! + 1, current[column]! + 1, previous[column]! + (leftChar === rightChar ? 0 : 1)));
+    }
+    previous = current;
+  }
+  return previous[right.length]!;
+};
+
+/** "has unknown type X", with the closest built-in or declared type name when one is near. */
+const unknownType = (name: string, objects: ReadonlySet<string>): string => {
+  const [suggestion] = [...formaTypeNames, ...objects]
+    .map((candidate) => ({ candidate, distance: editDistance(name.toLowerCase(), candidate.toLowerCase()) }))
+    .filter(({ distance }) => distance <= 2)
+    .sort((left, right) => left.distance - right.distance);
+  return suggestion
+    ? `has unknown type ${name}; did you mean ${suggestion.candidate}?`
+    : `has unknown type ${name}; declare (define-entity ${name} ...) or use a built-in type`;
+};
+
 const validateIR = (ir: OntologyIR, locations: ReadonlyMap<string, SourceLocation>): OntologyIR => {
   const errorAt = (name: string, message: string): never => {
     throw locatedError(message, locations.get(name));
@@ -369,12 +451,10 @@ const validateIR = (ir: OntologyIR, locations: ReadonlyMap<string, SourceLocatio
       errorAt(declaration.name, `Duplicate ontology declaration ${declaration.name}`);
     seen.add(identity);
   }
-  for (const object of ir.objectTypes) {
-    for (const property of object.properties) {
+  for (const declaration of [...ir.objectTypes, ...ir.linkTypes]) {
+    for (const property of declaration.properties) {
       if (property.valueType.kind === "ref" && !objects.has(property.valueType.target)) {
-        errorAt(object.name,
-          `Property ${property.key} references unknown object ${property.valueType.target}`,
-        );
+        errorAt(declaration.name, `Property ${property.key} ${unknownType(property.valueType.target, objects)}`);
       }
     }
   }
@@ -383,7 +463,26 @@ const validateIR = (ir: OntologyIR, locations: ReadonlyMap<string, SourceLocatio
       errorAt(link.name, `Link ${link.name} has unknown endpoints ${link.from} -> ${link.to}`);
     }
   }
+  const objectProperties = new Map(ir.objectTypes.map((object) => [object.name, object.properties]));
+  const linkProperties = new Map(ir.linkTypes.map((link) => [link.name, link.properties]));
+  const allProperties = ir.objectTypes.flatMap(({ properties }) => properties);
   for (const action of ir.actionTypes) {
+    for (const input of action.input) {
+      if (input.valueType.kind === "ref" && !objects.has(input.valueType.target)) {
+        errorAt(action.name, `Action ${action.name} input ${input.name} ${unknownType(input.valueType.target, objects)}`);
+      }
+    }
+    const checkLiterals = (
+      properties: readonly PropertyIR[],
+      values: Readonly<Record<string, ActionValueIR>>,
+    ) => {
+      for (const [key, value] of Object.entries(values)) {
+        if (typeof value === "object" && value !== null) continue;
+        const property = properties.find((candidate) => candidate.key === key);
+        const problem = property && valueProblem(property.valueType, value);
+        if (problem) errorAt(action.name, `Action ${action.name} writes ${key}, which ${problem}`);
+      }
+    };
     for (const change of action.changes) {
       if (change.kind === "create-object" && !objects.has(change.objectType)) {
         errorAt(action.name, `Action ${action.name} references unknown object ${change.objectType}`);
@@ -396,6 +495,15 @@ const validateIR = (ir: OntologyIR, locations: ReadonlyMap<string, SourceLocatio
         !propertyKeys.has(change.property)
       ) {
         errorAt(action.name, `Action ${action.name} references unknown property ${change.property}`);
+      }
+      if (change.kind === "create-object") {
+        checkLiterals(objectProperties.get(change.objectType) ?? [], change.properties);
+      }
+      if (change.kind === "set-property") {
+        checkLiterals(allProperties, { [change.property]: change.value });
+      }
+      if (change.kind === "create-link") {
+        checkLiterals(linkProperties.get(change.linkType) ?? [], change.properties);
       }
     }
   }

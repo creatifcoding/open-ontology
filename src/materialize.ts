@@ -17,9 +17,9 @@ import type {
   ActionValueIR,
   DatalogQueryIR,
   OntologyIR,
-  OntologyValueTypeIR,
   PropertyIR,
 } from "./ir.js";
+import { assertValueType, valueTypeSchema } from "./value-types.js";
 
 const valueToIR = (value: ActionValue): ActionValueIR => {
   if (typeof value !== "object" || value === null) return value;
@@ -37,7 +37,7 @@ const propertyToIR = (_name: string, property: PropertyDefinition): PropertyIR =
   valueType:
     property.kind === "ref"
       ? { kind: "ref", target: property.target?.name ?? "Object" }
-      : { kind: property.kind },
+      : property.valueType,
   required: property.isRequired,
   cardinality: property.cardinality,
   unique: property.isUnique,
@@ -205,22 +205,6 @@ export const ontologyToIR = (ontology: OntologyDefinition): OntologyIR => ({
   })),
 });
 
-const schemaFromType = (type: OntologyValueTypeIR): Schema.Schema<unknown> => {
-  switch (type.kind) {
-    case "string":
-    case "ref":
-      return Schema.String;
-    case "number":
-      return Schema.Number;
-    case "boolean":
-      return Schema.Boolean;
-    case "datetime":
-      return Schema.Union([Schema.Number, Schema.Date]);
-    case "json":
-      return Schema.Unknown;
-  }
-};
-
 const actionSchemaFromFields = (inputs: readonly ActionInputIR[]) =>
   Schema.Struct(
     Object.fromEntries(
@@ -229,12 +213,12 @@ const actionSchemaFromFields = (inputs: readonly ActionInputIR[]) =>
         input.optional
           ? Schema.optional(
               input.cardinality === "many"
-                ? Schema.Array(schemaFromType(input.valueType))
-                : schemaFromType(input.valueType),
+                ? Schema.Array(valueTypeSchema(input.valueType))
+                : valueTypeSchema(input.valueType),
             )
           : input.cardinality === "many"
-            ? Schema.Array(schemaFromType(input.valueType))
-            : schemaFromType(input.valueType),
+            ? Schema.Array(valueTypeSchema(input.valueType))
+            : valueTypeSchema(input.valueType),
       ]),
     ),
   );
@@ -246,20 +230,29 @@ const propertyFromIR = (
   property: PropertyIR,
   objects: ReadonlyMap<string, ObjectTypeDefinition>,
 ): PropertyDefinition => {
+  const type = assertValueType(property.valueType);
   let definition =
-    property.valueType.kind === "ref"
+    type.kind === "ref"
       ? Property.ref(
           property.key,
-          objects.get(property.valueType.target) ??
+          objects.get(type.target) ??
             (() => {
               throw new TypeError(
-                `Property ${property.key} references unknown object type ${property.valueType.target}`,
+                `Property ${property.key} references unknown object type ${type.target}`,
               );
             })(),
         )
-      : property.valueType.kind === "datetime"
+      : type.kind === "datetime"
         ? Property.instant(property.key)
-        : Property.make(property.key, schemaFromType(property.valueType));
+        : type.kind === "integer"
+          ? Property.int(property.key)
+          : type.kind === "enum"
+            ? Property.enum(property.key, type.values as readonly [string, ...string[]])
+            : type.kind === "decimal"
+              ? Property.decimal(property.key, type.scale)
+              : type.kind === "quantity"
+                ? Property.quantity(property.key, type.unit, type.scale)
+                : Property.make(property.key, valueTypeSchema(type));
   if (property.required) definition = definition.required();
   if (property.cardinality === "many") definition = definition.many();
   if (property.unique) definition = definition.unique();
