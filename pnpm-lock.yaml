@@ -23,13 +23,13 @@ importers:
       '@triplex-build/triplex':
         specifier: 0.2.0
         version: 0.2.0(patch_hash=27a8de7d30178d2a375be95414d88713091f7967e55b68ba258cc4fa8caf43a1)(effect@4.0.3)
-      effect:
-        specifier: 4.0.3
-        version: 4.0.3
     devDependencies:
       '@types/node':
         specifier: 25.9.1
         version: 25.9.1
+      effect:
+        specifier: 4.0.3
+        version: 4.0.3
       tsdown:
         specifier: 0.20.0
         version: 0.20.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)(typescript@5.9.3)

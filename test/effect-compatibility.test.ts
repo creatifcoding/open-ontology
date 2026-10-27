@@ -1,9 +1,36 @@
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Effect, Result, Schema } from "effect";
 import { DatabaseId, EntityId, KvTriples, TransactionId, TripleId, Triples, string, type DatalogQuery } from "@triplex-build/triplex";
 import { describe, expect, it } from "vitest";
 import { Change, Input, Ontology, Property, defineOntology, makeOntologyRuntime, materializeOntology, ontologyToIR, toTriplexConfig } from "../src/index.js";
 
+const root = fileURLToPath(new URL("..", import.meta.url));
+const release = /^\d+\.\d+\.\d+$/;
+// The Effect copy a pnpm-installed dependency resolves, as a real path.
+const effectOf = (packageName: string): string =>
+  realpathSync(`${realpathSync(`${root}node_modules/${packageName}`)}/${"../".repeat(packageName.split("/").length)}effect`);
+
 describe("Effect 4 compatibility", () => {
+  it("installs one Effect copy inside the declared peer range", () => {
+    const manifest = JSON.parse(readFileSync(`${root}package.json`, "utf8")) as {
+      readonly peerDependencies: { readonly effect: string };
+      readonly devDependencies: { readonly effect: string };
+    };
+    const range = manifest.peerDependencies.effect;
+    expect(range).toMatch(/^\^4\.\d+\.\d+$/);
+    const floor = range.slice(1);
+    // The lockfile tests the floor; the CI job that resolves the newest 4.x release tests the ceiling.
+    if (release.test(manifest.devDependencies.effect)) expect(manifest.devDependencies.effect).toBe(floor);
+    const installed: string = JSON.parse(readFileSync(`${root}node_modules/effect/package.json`, "utf8")).version;
+    expect(installed).toMatch(release);
+    expect(installed.split(".")[0]).toBe("4");
+    expect(installed.localeCompare(floor, undefined, { numeric: true })).toBeGreaterThanOrEqual(0);
+    const own = realpathSync(`${root}node_modules/effect`);
+    expect(effectOf("@formalang/ts")).toBe(own);
+    expect(effectOf("@triplex-build/triplex")).toBe(own);
+  });
+
   it.each([Schema.Date, Schema.NumberFromString])("rejects nonportable action inputs: %s", (schema) => {
     const action = Ontology.ActionType("nonportable", {
       input: Schema.Struct({ value: schema }),

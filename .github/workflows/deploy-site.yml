@@ -30,3 +30,22 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: pnpm site:deploy
+
+  effect-latest:
+    name: Effect peer range (latest 4.x)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The lockfile pins the peer floor; move Effect to the newest 4.x release. The overrides follow it.
+      - run: pnpm pkg set devDependencies.effect="^4" && pnpm update effect
+      - run: node -p '"effect " + require("./node_modules/effect/package.json").version'
+      - run: pnpm typecheck
+      - run: pnpm test

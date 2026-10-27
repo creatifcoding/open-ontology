@@ -25,7 +25,7 @@ For focused work, use `pnpm typecheck`, `pnpm test`, `pnpm build`, or `pnpm site
 - `docs/architecture.md`: package boundary and operational limits.
 - `apps/site/public/`: directly served static assets, including `llms.txt` and `llms-full.txt`; no docs build.
 - `apps/site/check.mjs`: static assets, agent-file structure, and local/repository link checks.
-- `.github/workflows/deploy-site.yml`: checks PRs and deploys the static site after merges to `main`.
+- `.github/workflows/deploy-site.yml`: checks PRs, reruns type checks and tests against the newest Effect 4 release, and deploys the static site after merges to `main`.
 
 ## Conventions and boundaries
 
